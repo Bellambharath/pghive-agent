@@ -1,0 +1,24 @@
+# Credentials — never commit these
+.env
+service_account.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ADK session data
+.adk/
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

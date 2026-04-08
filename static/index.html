@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PGHive AI Assistant</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; }
+
+  header {
+    background: #1e293b;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid #334155;
+  }
+  .logo { font-size: 24px; }
+  .title { font-size: 18px; font-weight: 700; color: #38bdf8; }
+  .subtitle { font-size: 12px; color: #64748b; }
+  .badge {
+    margin-left: auto;
+    background: #0f4c7a;
+    color: #38bdf8;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid #1e6fa8;
+  }
+
+  .quick-actions {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .quick-actions::-webkit-scrollbar { display: none; }
+  .pill {
+    white-space: nowrap;
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid #334155;
+    background: #0f172a;
+    color: #94a3b8;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .pill:hover { border-color: #38bdf8; color: #38bdf8; }
+
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .msg { display: flex; gap: 10px; max-width: 80%; animation: fadeIn 0.3s ease; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.agent { align-self: flex-start; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .avatar {
+    width: 32px; height: 32px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0;
+  }
+  .user .avatar { background: #1d4ed8; }
+  .agent .avatar { background: linear-gradient(135deg, #0ea5e9, #06b6d4); }
+
+  .bubble {
+    padding: 10px 14px; border-radius: 14px;
+    font-size: 14px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .user .bubble { background: #1e40af; border-bottom-right-radius: 4px; }
+  .agent .bubble { background: #1e293b; border: 1px solid #334155; border-bottom-left-radius: 4px; }
+
+  .typing { display: flex; gap: 4px; align-items: center; padding: 10px 14px; }
+  .typing span { width: 7px; height: 7px; border-radius: 50%; background: #38bdf8; animation: bounce 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-8px)} }
+
+  .input-area {
+    padding: 14px 16px;
+    background: #1e293b;
+    border-top: 1px solid #334155;
+    display: flex;
+    gap: 10px;
+  }
+  #msg {
+    flex: 1;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    color: #e2e8f0;
+    font-family: inherit;
+    font-size: 14px;
+    padding: 10px 14px;
+    outline: none;
+    resize: none;
+    max-height: 100px;
+  }
+  #msg:focus { border-color: #38bdf8; }
+  #msg::placeholder { color: #475569; }
+  #send {
+    width: 42px; height: 42px;
+    background: #0ea5e9;
+    border: none; border-radius: 10px;
+    color: white; font-size: 16px;
+    cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #send:hover { background: #0284c7; }
+  #send:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🏠</div>
+  <div>
+    <div class="title">PGHive AI</div>
+    <div class="subtitle">Multi-Agent PG Management System</div>
+  </div>
+  <div class="badge">Gemini 2.5 Flash</div>
+</header>
+
+<div class="quick-actions">
+  <button class="pill" onclick="send('Is my rent paid? I am T001')">💰 Check Rent T001</button>
+  <button class="pill" onclick="send('My bathroom tap is leaking, I am T001')">🔧 Report Issue</button>
+  <button class="pill" onclick="send('Show available rooms under Rs.10000')">🛏️ Find Room</button>
+  <button class="pill" onclick="send('Who has not paid rent this month?')">📊 Pending Dues</button>
+  <button class="pill" onclick="send('What is the curfew time?')">📋 House Rules</button>
+  <button class="pill" onclick="send('Send rent reminders to all pending tenants')">📧 Send Reminders</button>
+  <button class="pill" onclick="send('If 3 people share a room at Rs.12000 total how much each?')">🧮 Rent Split</button>
+</div>
+
+<div id="chat">
+  <div class="msg agent">
+    <div class="avatar">🏠</div>
+    <div class="bubble">👋 Hi! I'm PGHive AI — your smart PG management assistant.
+
+I can help with:
+💰 Rent status and payment reminders
+🔧 Maintenance tickets (saves to database, schedules calendar visit, sends email)
+🛏️ Room search and availability
+📊 Owner reports and due reminders
+📋 House rules and policies
+
+What can I help you with today?</div>
+  </div>
+</div>
+
+<div class="input-area">
+  <textarea id="msg" placeholder="Ask anything about your PG..." rows="1"></textarea>
+  <button id="send" onclick="sendMsg()">➤</button>
+</div>
+
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('msg');
+const sendBtn = document.getElementById('send');
+const SESSION_ID = 'session-' + Math.random().toString(36).slice(2);
+
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 100) + 'px';
+});
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+
+function send(text) { input.value = text; sendMsg(); }
+
+function addMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div class="avatar">${role === 'user' ? '👤' : '🏠'}</div><div class="bubble">${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>`;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addTyping() {
+  const div = document.createElement('div');
+  div.className = 'msg agent'; div.id = 'typing';
+  div.innerHTML = '<div class="avatar">🏠</div><div class="bubble typing"><span></span><span></span><span></span></div>';
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function sendMsg() {
+  const text = input.value.trim();
+  if (!text || sendBtn.disabled) return;
+  addMsg('user', text);
+  input.value = ''; input.style.height = 'auto';
+  sendBtn.disabled = true;
+  addTyping();
+
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: text, session_id: SESSION_ID })
+    });
+    const data = await res.json();
+    document.getElementById('typing')?.remove();
+    addMsg('agent', data.response || 'Sorry, something went wrong.');
+  } catch {
+    document.getElementById('typing')?.remove();
+    addMsg('agent', '⚠️ Connection error. Please try again.');
+  }
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+input.focus();
+</script>
+</body>
+</html>
