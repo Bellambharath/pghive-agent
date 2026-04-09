@@ -1,6 +1,9 @@
 import os
 import requests
 import uvicorn
+import resend
+import google.auth
+import google.auth.transport.requests
 from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,17 +11,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-# ── Firestore ──────────────────────────────────────────────────────────────
+# Firestore setup
 try:
     from google.cloud import firestore
     db = firestore.Client(project="pghive-agent-491911")
     db.collection("tenants").limit(1).get()
     FIRESTORE_OK = True
+    print("Firestore connected")
 except Exception as e:
     FIRESTORE_OK = False
     db = None
+    print(f"Firestore not available: {e}")
 
-# ── Google Calendar ────────────────────────────────────────────────────────
+# Google Calendar setup using service account
 CALENDAR_ID = "bharathyadav620@gmail.com"
 SERVICE_ACCOUNT_FILE = os.path.join(os.path.dirname(__file__), "service_account.json")
 calendar_service = None
@@ -26,25 +31,39 @@ calendar_service = None
 try:
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
-    creds = service_account.Credentials.from_service_account_file(
+
+    sa_creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
         scopes=["https://www.googleapis.com/auth/calendar"]
     )
-    calendar_service = build("calendar", "v3", credentials=creds)
-except Exception:
-    pass
+    calendar_service = build("calendar", "v3", credentials=sa_creds)
+    print("Google Calendar connected")
+except Exception as e:
+    print(f"Calendar not available: {e}")
 
-# ── Resend ─────────────────────────────────────────────────────────────────
-import resend
+# Resend for emails via pghive.in domain
 resend.api_key = os.environ.get("RESEND_API_KEY", "")
 
-# ── Gemini API ─────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-# ── Build system prompt with live data ─────────────────────────────────────
-def build_system_prompt():
-    # Load tenants from Firestore
+def call_gemini(payload: dict) -> requests.Response:
+    """Call Gemini via Vertex AI using GCP project credentials."""
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds.refresh(google.auth.transport.requests.Request())
+
+    url = (
+        "https://asia-south1-aiplatform.googleapis.com/v1/"
+        "projects/pghive-agent-491911/locations/asia-south1/"
+        "publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    headers = {
+        "Authorization": f"Bearer {creds.token}",
+        "Content-Type": "application/json"
+    }
+    return requests.post(url, json=payload, headers=headers, timeout=30)
+
+
+def build_system_prompt() -> str:
+    """Build the system prompt with live data from Firestore."""
     tenants_info = ""
     rooms_info = ""
 
@@ -52,16 +71,20 @@ def build_system_prompt():
         try:
             for doc in db.collection("tenants").stream():
                 d = doc.to_dict()
-                tenants_info += f"{doc.id}={d.get('name')},Room {d.get('room')},Rs.{d.get('rent')},{d.get('payment_status')},email:{d.get('email','')}. "
-        except:
+                tenants_info += (
+                    f"{doc.id}={d.get('name')},Room {d.get('room')},"
+                    f"Rs.{d.get('rent')},{d.get('payment_status')},"
+                    f"email:{d.get('email', '')}. "
+                )
+        except Exception:
             tenants_info = "T001=Ravi Kumar,Room 101,Rs.8500,PENDING. T002=Priya Sharma,Room 102,Rs.9000,PAID. T003=Arun Mehta,Room 201,Rs.7500,PENDING."
 
         try:
             for doc in db.collection("rooms").stream():
                 d = doc.to_dict()
                 status = "AVAILABLE" if d.get("available") else "OCCUPIED"
-                rooms_info += f"Room {doc.id}:{d.get('type')},Rs.{d.get('rent')},{status},{d.get('amenities',[])}. "
-        except:
+                rooms_info += f"Room {doc.id}:{d.get('type')},Rs.{d.get('rent')},{status},{d.get('amenities', [])}. "
+        except Exception:
             rooms_info = "Room 202:double,Rs.6000,AVAILABLE. Room 301:single,Rs.9000,AVAILABLE. Room 302:triple,Rs.4500,AVAILABLE."
     else:
         tenants_info = "T001=Ravi Kumar,Room 101,Rs.8500,PENDING. T002=Priya Sharma,Room 102,Rs.9000,PAID. T003=Arun Mehta,Room 201,Rs.7500,PENDING."
@@ -91,14 +114,17 @@ ALWAYS: Be short, friendly, and specific. Never say "contact your PG owner" — 
 If someone reports maintenance, always give a ticket ID and mention that calendar visit is scheduled and email sent."""
 
 
-# ── Handle maintenance side effects ───────────────────────────────────────
 def handle_maintenance_side_effects(tenant_id: str, issue: str, urgency: str, ticket_id: str):
-    """Save to Firestore, create Calendar event, send email."""
-    days = {"emergency": 0, "high": 1, "medium": 2, "low": 3}.get(urgency.lower(), 2)
-    visit_start = (datetime.now() + timedelta(days=days)).replace(hour=10, minute=0, second=0, microsecond=0)
+    """After a maintenance ticket is created — save to Firestore, schedule Calendar event, send email."""
+    days_map = {"emergency": 0, "high": 1, "medium": 2, "low": 3}
+    days_ahead = days_map.get(urgency.lower(), 2)
+
+    visit_start = (datetime.now() + timedelta(days=days_ahead)).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
     visit_end = visit_start + timedelta(hours=1)
 
-    # Save to Firestore
+    # Save ticket to Firestore
     if FIRESTORE_OK and db:
         try:
             db.collection("maintenance_tickets").document(ticket_id).set({
@@ -109,8 +135,8 @@ def handle_maintenance_side_effects(tenant_id: str, issue: str, urgency: str, ti
                 "status": "OPEN",
                 "created_at": datetime.now().isoformat()
             })
-        except:
-            pass
+        except Exception as e:
+            print(f"Firestore write failed: {e}")
 
     # Create Calendar event
     if calendar_service:
@@ -124,20 +150,21 @@ def handle_maintenance_side_effects(tenant_id: str, issue: str, urgency: str, ti
                     "end":   {"dateTime": visit_end.strftime("%Y-%m-%dT%H:%M:%S"),   "timeZone": "Asia/Kolkata"},
                 }
             ).execute()
-        except:
-            pass
+        except Exception as e:
+            print(f"Calendar event failed: {e}")
 
-    # Send email
-    tenant_email = ""
+    # Get tenant details and send confirmation email
     tenant_name = tenant_id
+    tenant_email = ""
+
     if FIRESTORE_OK and db:
         try:
             doc = db.collection("tenants").document(tenant_id).get()
             if doc.exists:
                 data = doc.to_dict()
-                tenant_email = data.get("email", "")
                 tenant_name = data.get("name", tenant_id)
-        except:
+                tenant_email = data.get("email", "")
+        except Exception:
             pass
 
     if tenant_email:
@@ -150,25 +177,26 @@ def handle_maintenance_side_effects(tenant_id: str, issue: str, urgency: str, ti
 
 Your maintenance request has been received.
 
-Ticket ID   : {ticket_id}
-Issue       : {issue}
-Scheduled   : {visit_start.strftime('%A, %B %d at 10:00 AM IST')}
+Ticket ID : {ticket_id}
+Issue     : {issue}
+Scheduled : {visit_start.strftime('%A, %B %d at 10:00 AM IST')}
 
 Our team will arrive at your room during this time.
+Please make sure someone is available to provide access.
 
 Thank you,
 PGHive Management
 support@pghive.in"""
             })
-        except:
-            pass
+        except Exception as e:
+            print(f"Email failed: {e}")
 
 
-# ── App ─────────────────────────────────────────────────────────────────────
+# FastAPI app setup
 app = FastAPI(title="PGHive AI Assistant")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Serve the chat UI
+#chat UI
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -203,35 +231,39 @@ def chat(req: ChatRequest):
         system_prompt = build_system_prompt()
 
         payload = {
+            "system_instruction": {
+                "parts": [{"text": system_prompt}]
+            },
             "contents": [{
-                "parts": [{"text": f"{system_prompt}\n\nUser: {req.message}"}]
+                "role": "user",
+                "parts": [{"text": req.message}]
             }]
         }
 
-        resp = requests.post(GEMINI_URL, json=payload, timeout=30)
+        resp = call_gemini(payload)
         data = resp.json()
 
         if "candidates" not in data:
             error_msg = data.get("error", {}).get("message", str(data))
-            print(f"Gemini API error: {error_msg}")
+            print(f"Gemini error: {error_msg}")
             return {"response": f"API Error: {error_msg}", "session_id": req.session_id}
 
         reply = data["candidates"][0]["content"]["parts"][0]["text"]
 
-        # Trigger maintenance side effects if this looks like a maintenance report
+        # Check if this is a maintenance request and trigger side effects
         msg_lower = req.message.lower()
-        maintenance_keywords = ["leaking", "broken", "no water", "no electricity", "not working",
-                                "repair", "maintenance", "fan", "tap", "toilet", "light", "door"]
+        maintenance_keywords = [
+            "leaking", "broken", "no water", "no electricity", "not working",
+            "repair", "maintenance", "fan", "tap", "toilet", "light", "door"
+        ]
 
         if any(kw in msg_lower for kw in maintenance_keywords):
-            # Try to extract tenant ID from message
             tenant_id = "UNKNOWN"
             for tid in ["T001", "T002", "T003"]:
                 if tid.lower() in req.message.lower():
                     tenant_id = tid
                     break
 
-            # Determine urgency
             urgency = "medium"
             if any(w in msg_lower for w in ["no water", "no electricity", "fire", "flood", "gas"]):
                 urgency = "emergency"
